@@ -1,4 +1,4 @@
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 __name__ = 'discourse-pm'
 __author__ = 'anxdpanic'
 __email__ = 'anxdpanic@@users.noreply.github.com'
