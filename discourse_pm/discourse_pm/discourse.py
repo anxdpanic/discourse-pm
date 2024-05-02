@@ -3,6 +3,7 @@ import logging
 import time
 from copy import deepcopy
 from functools import wraps
+from pathlib import Path
 
 import requests
 
@@ -38,6 +39,60 @@ def rate_limit(method):
     return _impl
 
 
+class Data:
+    def __init__(self):
+        self._filename = Path(Path().cwd(), 'data.json')
+        self._template = {
+            'users': []
+        }
+        self._data = deepcopy(self._template)
+        self._load()
+
+    @property
+    def data(self):
+        return self._data
+
+    @property
+    def users(self):
+        return self._data['users']
+
+    def set_users(self, usernames):
+        self._data['users'] = usernames
+        self._save()
+
+    def add_user(self, username):
+        self._data['users'].append(username)
+        self._save()
+
+    def del_user(self, username):
+        self._data['users'] = [user for user in self._data['users'] if user != username]
+        self._save()
+
+    def _save(self):
+        with self._filename.open('w') as handle:
+            json.dump(self._data, handle, indent=4)
+
+    def _load(self):
+        if not self._filename.is_file():
+            with self._filename.open('w') as handle:
+                json.dump(self._template, handle, indent=4)
+            return
+
+        try:
+            self._data = json.loads(self._filename.read_text())
+        except json.JSONDecodeError:
+            with self._filename.open('w') as handle:
+                json.dump(self._template, handle, indent=4)
+            self._data = deepcopy(self._template)
+            return
+
+        if 'users' not in self._data or not isinstance(self._data['users'], list):
+            with self._filename.open('w') as handle:
+                json.dump(self._template, handle, indent=4)
+            self._data = deepcopy(self._template)
+            return
+
+
 class Discourse:
     def __init__(self, hostname, username, api_key):
         self._hostname = hostname
@@ -64,6 +119,16 @@ class Discourse:
     @property
     def headers(self):
         return self._headers
+
+    @staticmethod
+    def _yes_no_input(prompt):
+        while True:
+            user_input = input(f'{prompt} [Y/n] ')
+            if user_input.lower() in ['', 'y', 'yes']:
+                return True
+            if user_input.lower() in ['n', 'no']:
+                return False
+            print(f'Unrecognized input: {user_input}')
 
     @rate_limit
     def _api_members(self, limit, offset):
@@ -124,6 +189,7 @@ class Discourse:
             page += 1
             time.sleep(sleep_between_request)
 
+        logger.info(f'Gathered a total of {len(users)} users')
         return users
 
     def _send_pm(self, username, title, message):
@@ -131,10 +197,12 @@ class Discourse:
         logger.info(f'Sending PM to {username}: {response.status_code} {response.reason}')
         return 200 <= response.status_code < 300
 
-    def _pm_users(self, users, title, message):
+    def _pm_users(self, users, title, message, data=None):
         last_item_index = len(users) - 1
         for index, user in enumerate(users):
-            self._send_pm(user['username'], title, message)
+            self._send_pm(user, title, message)
+            if isinstance(data, Data):
+                data.del_user(user)
             if index != last_item_index:
                 time.sleep(sleep_between_request)
 
@@ -143,12 +211,19 @@ class Discourse:
             self._send_pm(username, title, message)
 
     def pm_all(self, title, message):
-        users = self._get_users()
-        self._pm_users(users, title, message)
+        data = Data()
+        answer = False
+        if len(data.users) > 0:
+            answer = self._yes_no_input('Found users from a previous run, continue previous run?')
+        if answer:
+            users = data.users
+        else:
+            users = [user['username'] for user in self._get_users()]
+            data.set_users(users)
+        self._pm_users(users, title, message, data=data)
 
     def pm_moderators(self, title, message):
-        users = self._get_users()
-        moderators = [user for user in users if user.get('moderator', False)]
+        moderators = [user['username'] for user in self._get_users() if user.get('moderator', False)]
         self._pm_users(moderators, title, message)
 
     def pm_users(self, usernames, title, message):
